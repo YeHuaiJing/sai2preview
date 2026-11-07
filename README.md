@@ -35,6 +35,12 @@ cmake --install build --prefix dist
 
 会读取`test/hello.sai2`，把预览图写到`test/img.jpg`。
 
+## 效果
+
+`test/hello.sai2`导出到`test/thumb.jpg`的预览图。
+
+![hello.sai2的预览图](test/thumb.jpg)
+
 ## 接口
 
 ```c
