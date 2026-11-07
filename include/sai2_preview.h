@@ -51,15 +51,15 @@ extern "C" {
 #endif
 
 typedef enum sai2_status {
-    SAI2_OK               =  0,
-    SAI2_ERR_INVALID_ARG  = -1,
-    SAI2_ERR_NOT_SAI2     = -2,
-    SAI2_ERR_TRUNCATED    = -3,
+    SAI2_OK = 0,
+    SAI2_ERR_INVALID_ARG = -1,
+    SAI2_ERR_NOT_SAI2 = -2,
+    SAI2_ERR_TRUNCATED = -3,
     SAI2_ERR_NO_THUMBNAIL = -4,
-    SAI2_ERR_UNSUPPORTED  = -5,
-    SAI2_ERR_CORRUPT      = -6,
-    SAI2_ERR_NOMEM        = -7,
-    SAI2_ERR_IO           = -8
+    SAI2_ERR_UNSUPPORTED = -5,
+    SAI2_ERR_CORRUPT = -6,
+    SAI2_ERR_NOMEM = -7,
+    SAI2_ERR_IO = -8
 } sai2_status;
 
 typedef struct sai2_canvas_info {
@@ -67,30 +67,30 @@ typedef struct sai2_canvas_info {
     uint32_t height;
     uint32_t table_count;
     uint32_t selected_layer;
-    uint32_t background_color;  /* 按文件原样存储的0xAARRGGBB（字节序为BGRA） */
-    uint32_t layer_effect;      /* 4字符标签，例如"norm" */
-    uint8_t  background_flags;  /* 低3位，为0表示透明预览 */
-    uint8_t  flags0;
+    uint32_t background_color; /* 按文件原样存储的0xAARRGGBB（字节序为BGRA） */
+    uint32_t layer_effect;     /* 4字符标签，例如"norm" */
+    uint8_t background_flags;  /* 低3位，为0表示透明预览 */
+    uint8_t flags0;
 } sai2_canvas_info;
 
 typedef struct sai2_image {
-    uint8_t *data;   /* 由malloc分配的标准baseline JPEG码流 */
-    size_t   size;
+    uint8_t *data; /* 由malloc分配的标准baseline JPEG码流 */
+    size_t size;
     uint32_t width;
     uint32_t height;
 } sai2_image;
 
 typedef struct sai2_pixels {
-    uint8_t *data;   /* 由malloc分配的BGRA像素（字节序B、G、R、A），行从上到下 */
-    size_t   size;   /* 值为width * height * 4 */
+    uint8_t *data; /* 由malloc分配的BGRA像素（字节序B、G、R、A），行从上到下 */
+    size_t size;   /* 值为width * height * 4 */
     uint32_t width;
     uint32_t height;
 } sai2_pixels;
 
 /* sai2_thumbnail所持数据的格式。 */
 typedef enum sai2_thumbnail_format {
-    SAI2_THUMBNAIL_JPEG = 1,  /* data是完整的baseline JPEG码流 */
-    SAI2_THUMBNAIL_BGRA = 2   /* data是width*height*4字节的BGRA数据 */
+    SAI2_THUMBNAIL_JPEG = 1, /* data是完整的baseline JPEG码流 */
+    SAI2_THUMBNAIL_BGRA = 2  /* data是width*height*4字节的BGRA数据 */
 } sai2_thumbnail_format;
 
 /*
@@ -99,8 +99,8 @@ typedef enum sai2_thumbnail_format {
  */
 typedef struct sai2_thumbnail {
     sai2_thumbnail_format format;
-    uint8_t *data;      /* 由malloc分配，用sai2_thumbnail_free()释放 */
-    size_t   size;
+    uint8_t *data; /* 由malloc分配，用sai2_thumbnail_free()释放 */
+    size_t size;
     uint32_t width;
     uint32_t height;
 } sai2_thumbnail;
@@ -119,8 +119,7 @@ sai2_status sai2_thumbnail_extract(const void *file_data, size_t file_size,
  *   JPEG写JPEG文件，BGRA写32位BMP文件
  * 成功返回SAI2_OK。
  */
-sai2_status sai2_thumbnail_write(const sai2_thumbnail *thumb,
-                                 const char *path);
+sai2_status sai2_thumbnail_write(const sai2_thumbnail *thumb, const char *path);
 
 /*
  * 文件到文件的便捷接口
