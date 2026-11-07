@@ -29,13 +29,13 @@
  *
  * 快速上手，一次调用即可拿到可用的缩略图
  *
- *   sai2_thumbnail_export("input.sai2", "thumb.jpg"); // 或thumb.bmp
+ *   sai2_thumbnail_export("input.sai2", "thumb.jpg"); [或thumb.bmp]
  *
  * 或者，文件内容已经在内存里时
  *
  *   sai2_thumbnail thumb;
  *   if (sai2_thumbnail_extract(file_data, file_size, &thumb) == SAI2_OK) {
- *       sai2_thumbnail_write(&thumb, "thumb.jpg"); // BGRA时用.bmp
+ *       sai2_thumbnail_write(&thumb, "thumb.jpg"); [BGRA时用.bmp]
  *       sai2_thumbnail_free(&thumb);
  *   }
  */
