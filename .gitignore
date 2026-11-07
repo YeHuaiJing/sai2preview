@@ -1,0 +1,30 @@
+# CMake构建目录
+build/
+build-*/
+
+# 构建生成的文件
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+
+# 目标文件和库文件
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# 可执行文件
+*.exe
+*.pdb
+
+# 测试输出
+test/img.jpg
+test/img.bmp
+
+# 编辑器/IDE状态
+.vscode/
+
+.screenshots/
