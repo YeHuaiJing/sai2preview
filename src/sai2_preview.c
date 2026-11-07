@@ -45,7 +45,7 @@
 #include <string.h>
 
 #define SAI2_HEADER_SIZE 64u
-#define SAI2_ENTRY_SIZE  16u
+#define SAI2_ENTRY_SIZE 16u
 
 /* ------------------------------------------------------------------------- */
 /* 平台相关的辅助函数                                                        */
@@ -61,8 +61,7 @@ typedef int64_t sai_off_t;
 
 /* Windows上的fopen()按ANSI代码页打开文件，这里先把UTF-8路径转成UTF-16，
  * 让含中文或非ASCII字符的路径也能用。 */
-static FILE *sai_fopen(const char *path, const char *mode)
-{
+static FILE *sai_fopen(const char *path, const char *mode) {
     wchar_t *wide;
     int length;
     FILE *file;
@@ -98,19 +97,16 @@ typedef long sai_off_t;
 /* 小端读取函数                                                              */
 /* ------------------------------------------------------------------------- */
 
-static uint16_t rd16le(const uint8_t *p)
-{
+static uint16_t rd16le(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
-static uint32_t rd32le(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+static uint32_t rd32le(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
 }
 
-static uint64_t rd64le(const uint8_t *p)
-{
+static uint64_t rd64le(const uint8_t *p) {
     return (uint64_t)rd32le(p) | ((uint64_t)rd32le(p + 4) << 32);
 }
 
@@ -129,8 +125,7 @@ typedef struct chunk_ref {
  * 找到返回0，没找到返回1，出错返回负的sai2_status值。
  */
 static int find_chunk(const uint8_t *data, size_t size, const char tag[4],
-                      chunk_ref *out)
-{
+                      chunk_ref *out) {
     uint32_t count;
     uint32_t i;
     uint64_t target_offset = 0;
@@ -150,7 +145,8 @@ static int find_chunk(const uint8_t *data, size_t size, const char tag[4],
         return SAI2_ERR_TRUNCATED;
 
     for (i = 0; i < count; ++i) {
-        const uint8_t *entry = data + SAI2_HEADER_SIZE + (size_t)i * SAI2_ENTRY_SIZE;
+        const uint8_t *entry =
+            data + SAI2_HEADER_SIZE + (size_t)i * SAI2_ENTRY_SIZE;
         if (memcmp(entry, tag, 4) == 0 && !found) {
             target_offset = rd64le(entry + 8);
             layer_id = rd32le(entry + 4);
@@ -167,8 +163,8 @@ static int find_chunk(const uint8_t *data, size_t size, const char tag[4],
     /* 块的长度一直延伸到文件中下一个块的偏移，或者文件末尾。 */
     end_offset = size;
     for (i = 0; i < count; ++i) {
-        uint64_t offset = rd64le(data + SAI2_HEADER_SIZE +
-                                 (size_t)i * SAI2_ENTRY_SIZE + 8);
+        uint64_t offset =
+            rd64le(data + SAI2_HEADER_SIZE + (size_t)i * SAI2_ENTRY_SIZE + 8);
         if (offset > target_offset && offset < end_offset)
             end_offset = offset;
     }
@@ -188,8 +184,7 @@ static int find_chunk(const uint8_t *data, size_t size, const char tag[4],
 /* ------------------------------------------------------------------------- */
 
 sai2_status sai2_get_info(const void *file_data, size_t file_size,
-                          sai2_canvas_info *out_info)
-{
+                          sai2_canvas_info *out_info) {
     const uint8_t *d = (const uint8_t *)file_data;
     uint32_t count;
 
@@ -201,7 +196,8 @@ sai2_status sai2_get_info(const void *file_data, size_t file_size,
         return SAI2_ERR_NOT_SAI2;
 
     count = rd32le(d + 32);
-    if ((uint64_t)count > ((uint64_t)file_size - SAI2_HEADER_SIZE) / SAI2_ENTRY_SIZE)
+    if ((uint64_t)count >
+        ((uint64_t)file_size - SAI2_HEADER_SIZE) / SAI2_ENTRY_SIZE)
         return SAI2_ERR_TRUNCATED;
 
     out_info->flags0 = d[16];
@@ -222,12 +218,11 @@ sai2_status sai2_get_info(const void *file_data, size_t file_size,
 
 typedef struct byte_buf {
     uint8_t *data;
-    size_t   len;
-    size_t   cap;
+    size_t len;
+    size_t cap;
 } byte_buf;
 
-static int buf_reserve(byte_buf *b, size_t extra)
-{
+static int buf_reserve(byte_buf *b, size_t extra) {
     size_t need;
     size_t cap;
 
@@ -256,8 +251,7 @@ static int buf_reserve(byte_buf *b, size_t extra)
     return 1;
 }
 
-static int buf_put(byte_buf *b, const void *src, size_t n)
-{
+static int buf_put(byte_buf *b, const void *src, size_t n) {
     if (!buf_reserve(b, n))
         return 0;
     memcpy(b->data + b->len, src, n);
@@ -265,13 +259,9 @@ static int buf_put(byte_buf *b, const void *src, size_t n)
     return 1;
 }
 
-static int buf_u8(byte_buf *b, uint8_t v)
-{
-    return buf_put(b, &v, 1);
-}
+static int buf_u8(byte_buf *b, uint8_t v) { return buf_put(b, &v, 1); }
 
-static int buf_u16be(byte_buf *b, uint16_t v)
-{
+static int buf_u16be(byte_buf *b, uint16_t v) {
     uint8_t t[2];
     t[0] = (uint8_t)(v >> 8);
     t[1] = (uint8_t)v;
@@ -284,76 +274,51 @@ static int buf_u16be(byte_buf *b, uint16_t v)
 
 /* 标准JPEG Annex K霍夫曼表的载荷数据。 */
 static const uint8_t k_huff_dc_luma[29] = {
-    0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01,
-    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-    0x08, 0x09, 0x0A, 0x0B
-};
+    0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+    0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B};
 
 static const uint8_t k_huff_ac_luma[179] = {
-    0x10,
-    0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03,
-    0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D,
-    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
-    0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
-    0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08,
-    0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
-    0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16,
-    0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28,
-    0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
-    0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
-    0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
-    0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
-    0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
-    0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
-    0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
-    0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
-    0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6,
-    0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5,
-    0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4,
-    0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2,
-    0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA,
-    0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
-    0xF9, 0xFA
-};
+    0x10, 0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04,
+    0x04, 0x00, 0x00, 0x01, 0x7D, 0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05,
+    0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14,
+    0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1,
+    0xF0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19,
+    0x1A, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38,
+    0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54,
+    0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
+    0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84,
+    0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+    0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA,
+    0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4,
+    0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+    0xD8, 0xD9, 0xDA, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9,
+    0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA};
 
 static const uint8_t k_huff_dc_chroma[29] = {
-    0x01, 0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01,
-    0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
-    0x07, 0x08, 0x09, 0x0A, 0x0B
-};
+    0x01, 0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+    0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B};
 
 static const uint8_t k_huff_ac_chroma[179] = {
-    0x11,
-    0x00, 0x02, 0x01, 0x02, 0x04, 0x04, 0x03, 0x04,
-    0x07, 0x05, 0x04, 0x04, 0x00, 0x01, 0x02, 0x77,
-    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
-    0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
-    0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
-    0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0,
-    0x15, 0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34,
-    0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26,
-    0x27, 0x28, 0x29, 0x2A, 0x35, 0x36, 0x37, 0x38,
-    0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
-    0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
-    0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
-    0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
-    0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
-    0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96,
-    0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5,
-    0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4,
-    0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3,
-    0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2,
-    0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA,
-    0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9,
-    0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
-    0xF9, 0xFA
-};
+    0x11, 0x00, 0x02, 0x01, 0x02, 0x04, 0x04, 0x03, 0x04, 0x07, 0x05, 0x04,
+    0x04, 0x00, 0x01, 0x02, 0x77, 0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05,
+    0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13, 0x22, 0x32,
+    0x81, 0x08, 0x14, 0x42, 0x91, 0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52,
+    0xF0, 0x15, 0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34, 0xE1, 0x25, 0xF1,
+    0x17, 0x18, 0x19, 0x1A, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x35, 0x36, 0x37,
+    0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53,
+    0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67,
+    0x68, 0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x82,
+    0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95,
+    0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8,
+    0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2,
+    0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5,
+    0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8,
+    0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA};
 
 sai2_status sai2_extract_jpeg(const void *file_data, size_t file_size,
-                              sai2_image *out_image)
-{
+                              sai2_image *out_image) {
     const uint8_t *d = (const uint8_t *)file_data;
     chunk_ref chunk;
     const uint8_t *p;
@@ -456,11 +421,11 @@ sai2_status sai2_extract_jpeg(const void *file_data, size_t file_size,
 
     /* DHT霍夫曼表 */
     {
-        uint16_t body = (uint16_t)(sizeof(k_huff_dc_luma) +
-                                   sizeof(k_huff_ac_luma) +
-                                   (channels > 1 ? sizeof(k_huff_dc_chroma) +
-                                                   sizeof(k_huff_ac_chroma)
-                                                 : 0));
+        uint16_t body =
+            (uint16_t)(sizeof(k_huff_dc_luma) + sizeof(k_huff_ac_luma) +
+                       (channels > 1 ? sizeof(k_huff_dc_chroma) +
+                                           sizeof(k_huff_ac_chroma)
+                                     : 0));
         if (!buf_u16be(&out, 0xFFC4) || !buf_u16be(&out, (uint16_t)(2 + body)))
             goto oom;
         if (!buf_put(&out, k_huff_dc_luma, sizeof(k_huff_dc_luma)) ||
@@ -478,12 +443,11 @@ sai2_status sai2_extract_jpeg(const void *file_data, size_t file_size,
         uint16_t i;
         if (!buf_u16be(&out, 0xFFC0) ||
             !buf_u16be(&out, (uint16_t)(8 + channels * 3)) ||
-            !buf_u8(&out, 8) || !buf_u16be(&out, jh) ||
-            !buf_u16be(&out, jw) || !buf_u8(&out, (uint8_t)channels))
+            !buf_u8(&out, 8) || !buf_u16be(&out, jh) || !buf_u16be(&out, jw) ||
+            !buf_u8(&out, (uint8_t)channels))
             goto oom;
         for (i = 0; i < channels; ++i) {
-            if (!buf_u8(&out, (uint8_t)(i + 1)) ||
-                !buf_u8(&out, 0x11) ||
+            if (!buf_u8(&out, (uint8_t)(i + 1)) || !buf_u8(&out, 0x11) ||
                 !buf_u8(&out, (uint8_t)(i != 0 ? 1 : 0)))
                 goto oom;
         }
@@ -553,8 +517,7 @@ typedef struct byte_span {
     size_t n;
 } byte_span;
 
-static int span_u16(byte_span *s, uint16_t *v)
-{
+static int span_u16(byte_span *s, uint16_t *v) {
     if (s->n < 2)
         return 0;
     *v = rd16le(s->p);
@@ -563,8 +526,7 @@ static int span_u16(byte_span *s, uint16_t *v)
     return 1;
 }
 
-static uint32_t ctz64(uint64_t v)
-{
+static uint32_t ctz64(uint64_t v) {
 #if defined(__GNUC__) || defined(__clang__)
     return (uint32_t)__builtin_ctzll(v);
 #else
@@ -592,11 +554,10 @@ static uint32_t ctz64(uint64_t v)
  * 每个通道都从字节边界开始。
  */
 static sai2_status unpack_delta_rle16(const uint8_t *compressed,
-                                      size_t compressed_size,
-                                      int16_t *out, uint32_t pixel_count,
-                                      uint8_t out_channels,
-                                      uint8_t in_channels, size_t *consumed)
-{
+                                      size_t compressed_size, int16_t *out,
+                                      uint32_t pixel_count,
+                                      uint8_t out_channels, uint8_t in_channels,
+                                      size_t *consumed) {
     byte_span s;
     uint64_t mask = 0;
     uint32_t remaining = 0;
@@ -669,7 +630,8 @@ static sai2_status unpack_delta_rle16(const uint8_t *compressed,
                 value_bits = opcode;
                 value_mask = ((uint64_t)1 << opcode) - 1u;
                 value = mask & value_mask;
-                value_mag = (int32_t)((((uint64_t)1 << value_bits) | value) - 1u);
+                value_mag =
+                    (int32_t)((((uint64_t)1 << value_bits) | value) - 1u);
                 result = (int16_t)(active ? -value_mag : value_mag);
 
                 remaining -= opcode + 1u;
@@ -721,8 +683,7 @@ static sai2_status unpack_delta_rle16(const uint8_t *compressed,
  * 算术规则与SAI编码器一致。
  */
 static void delta_unpack_row(uint8_t *dest, const uint8_t *previous_row,
-                             const int16_t *delta, uint32_t count)
-{
+                             const int16_t *delta, uint32_t count) {
     uint16_t sum[4] = {0, 0, 0, 0};
     uint16_t prev16[4] = {0, 0, 0, 0};
     uint32_t i;
@@ -736,7 +697,7 @@ static void delta_unpack_row(uint8_t *dest, const uint8_t *previous_row,
 
         for (c = 0; c < 4; ++c) {
             uint32_t a = (uint32_t)sum[c] + cur_prev[c];
-            uint16_t a16 = (uint16_t)a;  /* 回绕加法 */
+            uint16_t a16 = (uint16_t)a; /* 回绕加法 */
             uint16_t b;
             uint16_t cc;
             uint16_t d;
@@ -761,8 +722,7 @@ static void delta_unpack_row(uint8_t *dest, const uint8_t *previous_row,
 }
 
 sai2_status sai2_extract_pixels(const void *file_data, size_t file_size,
-                                sai2_pixels *out_pixels)
-{
+                                sai2_pixels *out_pixels) {
     const uint8_t *d = (const uint8_t *)file_data;
     sai2_canvas_info info;
     chunk_ref chunk;
@@ -881,13 +841,14 @@ sai2_status sai2_extract_pixels(const void *file_data, size_t file_size,
                 for (row = 0; row < tile_size_y; ++row) {
                     int16_t row_delta[256 * 4];
                     size_t consumed = 0;
-                    uint8_t *dest_row = image +
-                        ((size_t)(tile_beg_y + row) * info.width +
-                         tile_beg_x) * 4u;
+                    uint8_t *dest_row =
+                        image +
+                        ((size_t)(tile_beg_y + row) * info.width + tile_beg_x) *
+                            4u;
 
                     rc = unpack_delta_rle16(tile.p, tile.n, row_delta,
-                                            tile_size_x, 4,
-                                            (uint8_t)channels, &consumed);
+                                            tile_size_x, 4, (uint8_t)channels,
+                                            &consumed);
                     if (rc != SAI2_OK)
                         goto fail;
 
@@ -938,14 +899,12 @@ fail:
 /* 高层缩略图接口                                                            */
 /* ------------------------------------------------------------------------- */
 
-static void write_le16(uint8_t *p, uint16_t v)
-{
+static void write_le16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)v;
     p[1] = (uint8_t)(v >> 8);
 }
 
-static void write_le32(uint8_t *p, uint32_t v)
-{
+static void write_le32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)v;
     p[1] = (uint8_t)(v >> 8);
     p[2] = (uint8_t)(v >> 16);
@@ -953,8 +912,7 @@ static void write_le32(uint8_t *p, uint32_t v)
 }
 
 static sai2_status write_bmp_file(const sai2_thumbnail *thumb,
-                                  const char *path)
-{
+                                  const char *path) {
     FILE *f;
     uint8_t header[54];
     uint32_t image_size;
@@ -973,13 +931,13 @@ static sai2_status write_bmp_file(const sai2_thumbnail *thumb,
     header[1] = 'M';
     write_le32(header + 2, 54u + image_size);
     write_le32(header + 10, 54u);
-    write_le32(header + 14, 40u);   /* BITMAPINFOHEADER */
+    write_le32(header + 14, 40u); /* BITMAPINFOHEADER */
     write_le32(header + 18, thumb->width);
     /* 高度取负值，表示行按从上到下存储。 */
     write_le32(header + 22, (uint32_t)(-(int32_t)thumb->height));
-    write_le16(header + 26, 1u);    /* 平面数 */
-    write_le16(header + 28, 32u);   /* 每像素位数 */
-    write_le32(header + 30, 0u);    /* BI_RGB，不压缩 */
+    write_le16(header + 26, 1u);  /* 平面数 */
+    write_le16(header + 28, 32u); /* 每像素位数 */
+    write_le32(header + 30, 0u);  /* BI_RGB，不压缩 */
     write_le32(header + 34, image_size);
     write_le32(header + 38, 2835u); /* 72 DPI */
     write_le32(header + 42, 2835u);
@@ -997,8 +955,7 @@ static sai2_status write_bmp_file(const sai2_thumbnail *thumb,
 }
 
 sai2_status sai2_thumbnail_extract(const void *file_data, size_t file_size,
-                                   sai2_thumbnail *out_thumbnail)
-{
+                                   sai2_thumbnail *out_thumbnail) {
     sai2_image jpeg;
     sai2_pixels pixels;
     sai2_status rc;
@@ -1033,8 +990,8 @@ sai2_status sai2_thumbnail_extract(const void *file_data, size_t file_size,
     return rc;
 }
 
-sai2_status sai2_thumbnail_write(const sai2_thumbnail *thumb, const char *path)
-{
+sai2_status sai2_thumbnail_write(const sai2_thumbnail *thumb,
+                                 const char *path) {
     if (!thumb || !path)
         return SAI2_ERR_INVALID_ARG;
 
@@ -1061,8 +1018,7 @@ sai2_status sai2_thumbnail_write(const sai2_thumbnail *thumb, const char *path)
 }
 
 static sai2_status read_entire_file(const char *path, uint8_t **out_data,
-                                    size_t *out_size)
-{
+                                    size_t *out_size) {
     FILE *f;
     sai_off_t size;
     uint8_t *data;
@@ -1104,8 +1060,7 @@ static sai2_status read_entire_file(const char *path, uint8_t **out_data,
 }
 
 sai2_status sai2_thumbnail_export(const char *sai2_path,
-                                  const char *output_path)
-{
+                                  const char *output_path) {
     uint8_t *file_data = NULL;
     size_t file_size = 0;
     sai2_thumbnail thumb;
@@ -1128,8 +1083,7 @@ sai2_status sai2_thumbnail_export(const char *sai2_path,
     return rc;
 }
 
-void sai2_thumbnail_free(sai2_thumbnail *thumb)
-{
+void sai2_thumbnail_free(sai2_thumbnail *thumb) {
     if (!thumb)
         return;
     free(thumb->data);
@@ -1143,8 +1097,7 @@ void sai2_thumbnail_free(sai2_thumbnail *thumb)
 /* 清理与错误信息                                                            */
 /* ------------------------------------------------------------------------- */
 
-void sai2_image_free(sai2_image *image)
-{
+void sai2_image_free(sai2_image *image) {
     if (!image)
         return;
     free(image->data);
@@ -1154,8 +1107,7 @@ void sai2_image_free(sai2_image *image)
     image->height = 0;
 }
 
-void sai2_pixels_free(sai2_pixels *pixels)
-{
+void sai2_pixels_free(sai2_pixels *pixels) {
     if (!pixels)
         return;
     free(pixels->data);
@@ -1165,18 +1117,27 @@ void sai2_pixels_free(sai2_pixels *pixels)
     pixels->height = 0;
 }
 
-const char *sai2_status_string(sai2_status status)
-{
+const char *sai2_status_string(sai2_status status) {
     switch (status) {
-    case SAI2_OK:               return "ok";
-    case SAI2_ERR_INVALID_ARG:  return "invalid argument";
-    case SAI2_ERR_NOT_SAI2:     return "not a SAI2 canvas";
-    case SAI2_ERR_TRUNCATED:    return "truncated file";
-    case SAI2_ERR_NO_THUMBNAIL: return "no preview chunk";
-    case SAI2_ERR_UNSUPPORTED:  return "unsupported preview";
-    case SAI2_ERR_CORRUPT:      return "corrupt preview data";
-    case SAI2_ERR_NOMEM:        return "out of memory";
-    case SAI2_ERR_IO:           return "I/O error";
-    default:                    return "unknown error";
+    case SAI2_OK:
+        return "ok";
+    case SAI2_ERR_INVALID_ARG:
+        return "invalid argument";
+    case SAI2_ERR_NOT_SAI2:
+        return "not a SAI2 canvas";
+    case SAI2_ERR_TRUNCATED:
+        return "truncated file";
+    case SAI2_ERR_NO_THUMBNAIL:
+        return "no preview chunk";
+    case SAI2_ERR_UNSUPPORTED:
+        return "unsupported preview";
+    case SAI2_ERR_CORRUPT:
+        return "corrupt preview data";
+    case SAI2_ERR_NOMEM:
+        return "out of memory";
+    case SAI2_ERR_IO:
+        return "I/O error";
+    default:
+        return "unknown error";
     }
 }

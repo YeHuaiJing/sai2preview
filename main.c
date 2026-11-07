@@ -11,8 +11,7 @@
 
 #include <stdio.h>
 
-int main(void)
-{
+int main(void) {
     sai2_status rc = sai2_thumbnail_export("test/hello.sai2", "test/img.jpg");
 
     if (rc != SAI2_OK) {
