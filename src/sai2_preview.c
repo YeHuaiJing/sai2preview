@@ -317,19 +317,183 @@ static const uint8_t k_huff_ac_chroma[179] = {
     0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8,
     0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA};
 
+/* thum块头的解析结果。 */
+typedef struct thum_header {
+    uint16_t width;    /* JPEG像素宽度 */
+    uint16_t height;   /* JPEG像素高度 */
+    uint16_t channels; /* 通道数 */
+    const uint8_t *luma_quant;
+    const uint8_t *chroma_quant; /* 单通道时为NULL */
+    const uint8_t *scan;         /* 第一段熵编码数据 */
+} thum_header;
+
+/* 校验每8行像素一段的扫描表，并统计熵编码字节总数。 */
+static sai2_status validate_scan_table(const uint8_t *s, size_t sl,
+                                        uint32_t rows, size_t *scan_total) {
+    for (uint32_t r = 0; r < rows; ++r) {
+        uint16_t n;
+
+        if (sl < 2)
+            return SAI2_ERR_TRUNCATED;
+        n = rd16le(s);
+        s += 2;
+        sl -= 2;
+        if (n > sl)
+            return SAI2_ERR_TRUNCATED;
+        s += n;
+        sl -= n;
+        *scan_total += n;
+    }
+    return SAI2_OK;
+}
+
+/* 解析thum块头：尺寸、通道数、量化表，并定位熵编码数据。
+ * 同时校验扫描表没有越界。 */
+static sai2_status parse_thum_header(const uint8_t *p, size_t left,
+                                     thum_header *th) {
+    size_t scan_total = 0;
+    uint32_t rows;
+    sai2_status rc;
+
+    /* u32宽度、u32高度、"jssf"（画布预览尺寸） */
+    if (left < 12)
+        return SAI2_ERR_TRUNCATED;
+    p += 8;
+    left -= 8;
+    if (memcmp(p, "jssf", 4) != 0)
+        return SAI2_ERR_CORRUPT;
+    p += 4;
+    left -= 4;
+
+    /* u16宽度、u16高度、u16通道数 */
+    if (left < 6)
+        return SAI2_ERR_TRUNCATED;
+    th->width = rd16le(p);
+    th->height = rd16le(p + 2);
+    th->channels = rd16le(p + 4);
+    p += 6;
+    left -= 6;
+
+    if (th->width == 0 || th->height == 0 || th->channels == 0 ||
+        th->channels > 4)
+        return SAI2_ERR_UNSUPPORTED;
+
+    if (left < 64)
+        return SAI2_ERR_TRUNCATED;
+    th->luma_quant = p;
+    p += 64;
+    left -= 64;
+    th->chroma_quant = NULL;
+    if (th->channels > 1) {
+        if (left < 64)
+            return SAI2_ERR_TRUNCATED;
+        th->chroma_quant = p;
+        p += 64;
+        left -= 64;
+    }
+
+    rows = ((uint32_t)th->height + 7u) / 8u;
+    rc = validate_scan_table(p, left, rows, &scan_total);
+    if (rc != SAI2_OK)
+        return rc;
+    if (scan_total > SIZE_MAX - 4096)
+        return SAI2_ERR_NOMEM;
+
+    th->scan = p;
+    return SAI2_OK;
+}
+
+/* DQT量化表 */
+static int jpeg_put_dqt(byte_buf *out, const thum_header *th) {
+    int has_chroma = th->channels > 1;
+    uint16_t body = (uint16_t)(65 + (has_chroma ? 65 : 0));
+
+    if (!buf_u16be(out, 0xFFDB) || !buf_u16be(out, (uint16_t)(2 + body)) ||
+        !buf_u8(out, 0x00) || !buf_put(out, th->luma_quant, 64))
+        return 0;
+    if (!has_chroma)
+        return 1;
+    return buf_u8(out, 0x01) && buf_put(out, th->chroma_quant, 64);
+}
+
+/* DHT霍夫曼表 */
+static int jpeg_put_dht(byte_buf *out, uint16_t channels) {
+    int has_chroma = channels > 1;
+    uint16_t body =
+        (uint16_t)(sizeof(k_huff_dc_luma) + sizeof(k_huff_ac_luma) +
+                   (has_chroma ? sizeof(k_huff_dc_chroma) +
+                                     sizeof(k_huff_ac_chroma)
+                               : 0));
+
+    if (!buf_u16be(out, 0xFFC4) || !buf_u16be(out, (uint16_t)(2 + body)) ||
+        !buf_put(out, k_huff_dc_luma, sizeof(k_huff_dc_luma)) ||
+        !buf_put(out, k_huff_ac_luma, sizeof(k_huff_ac_luma)))
+        return 0;
+    if (!has_chroma)
+        return 1;
+    return buf_put(out, k_huff_dc_chroma, sizeof(k_huff_dc_chroma)) &&
+           buf_put(out, k_huff_ac_chroma, sizeof(k_huff_ac_chroma));
+}
+
+/* SOF0帧头 */
+static int jpeg_put_sof0(byte_buf *out, const thum_header *th) {
+    if (!buf_u16be(out, 0xFFC0) ||
+        !buf_u16be(out, (uint16_t)(8 + th->channels * 3)) ||
+        !buf_u8(out, 8) || !buf_u16be(out, th->height) ||
+        !buf_u16be(out, th->width) || !buf_u8(out, (uint8_t)th->channels))
+        return 0;
+    for (uint16_t i = 0; i < th->channels; ++i) {
+        if (!buf_u8(out, (uint8_t)(i + 1)) || !buf_u8(out, 0x11) ||
+            !buf_u8(out, (uint8_t)(i != 0 ? 1 : 0)))
+            return 0;
+    }
+    return 1;
+}
+
+/* DRI，每个8像素高的MCU行使用一个重启间隔 */
+static int jpeg_put_dri(byte_buf *out, uint16_t width) {
+    return buf_u16be(out, 0xFFDD) && buf_u16be(out, 4) &&
+           buf_u16be(out, (uint16_t)((width + 7u) / 8u));
+}
+
+/* SOS扫描头 */
+static int jpeg_put_sos(byte_buf *out, uint16_t channels) {
+    if (!buf_u16be(out, 0xFFDA) ||
+        !buf_u16be(out, (uint16_t)(6 + channels * 2)) ||
+        !buf_u8(out, (uint8_t)channels))
+        return 0;
+    for (uint16_t i = 0; i < channels; ++i) {
+        if (!buf_u8(out, (uint8_t)(i + 1)) ||
+            !buf_u8(out, (uint8_t)(i == 0 ? 0x00 : 0x11)))
+            return 0;
+    }
+    return buf_u8(out, 0x00) && buf_u8(out, 0x3F) && buf_u8(out, 0x00);
+}
+
+/* 熵编码扫描数据，每个重启间隔对应一行MCU。
+ * 解析时已校验过每行都没有越界，这里直接按校验结果读取。 */
+static int jpeg_put_scan(byte_buf *out, const thum_header *th) {
+    const uint8_t *s = th->scan;
+    uint32_t rows = ((uint32_t)th->height + 7u) / 8u;
+
+    for (uint32_t r = 0; r < rows; ++r) {
+        uint16_t n = rd16le(s);
+        s += 2;
+        if (!buf_put(out, s, n))
+            return 0;
+        s += n;
+        if (r + 1 < rows && !buf_u16be(out, (uint16_t)(0xFFD0 | (r & 7u))))
+            return 0;
+    }
+    return 1;
+}
+
 sai2_status sai2_extract_jpeg(const void *file_data, size_t file_size,
                               sai2_image *out_image) {
     const uint8_t *d = (const uint8_t *)file_data;
     chunk_ref chunk;
-    const uint8_t *p;
-    size_t left;
-    uint16_t jw, jh, channels;
-    const uint8_t *luma_quant;
-    const uint8_t *chroma_quant = NULL;
-    uint32_t rows;
-    uint32_t r;
-    size_t scan_total = 0;
-    byte_buf out = {0, 0, 0};
+    thum_header th;
+    byte_buf out = {NULL, 0, 0};
     int rc;
 
     if (!d || !out_image)
@@ -342,165 +506,24 @@ sai2_status sai2_extract_jpeg(const void *file_data, size_t file_size,
     if (rc < 0)
         return (sai2_status)rc;
 
-    p = d + chunk.offset;
-    left = (size_t)chunk.size;
+    rc = parse_thum_header(d + chunk.offset, (size_t)chunk.size, &th);
+    if (rc != SAI2_OK)
+        return (sai2_status)rc;
 
-    /* u32宽度、u32高度、"jssf"（画布预览尺寸） */
-    if (left < 8)
-        return SAI2_ERR_TRUNCATED;
-    p += 8;
-    left -= 8;
-    if (memcmp(p, "jssf", 4) != 0)
-        return SAI2_ERR_CORRUPT;
-    p += 4;
-    left -= 4;
-
-    /* u16宽度、u16高度、u16通道数 */
-    if (left < 6)
-        return SAI2_ERR_TRUNCATED;
-    jw = rd16le(p);
-    jh = rd16le(p + 2);
-    channels = rd16le(p + 4);
-    p += 6;
-    left -= 6;
-
-    if (jw == 0 || jh == 0 || channels == 0 || channels > 4)
-        return SAI2_ERR_UNSUPPORTED;
-
-    if (left < 64)
-        return SAI2_ERR_TRUNCATED;
-    luma_quant = p;
-    p += 64;
-    left -= 64;
-    if (channels > 1) {
-        if (left < 64)
-            return SAI2_ERR_TRUNCATED;
-        chroma_quant = p;
-        p += 64;
-        left -= 64;
-    }
-
-    /* 校验每8行像素一段的扫描表，并统计熵编码字节总数。 */
-    rows = (jh + 7u) / 8u;
-    {
-        const uint8_t *s = p;
-        size_t sl = left;
-        for (r = 0; r < rows; ++r) {
-            uint16_t n;
-            if (sl < 2)
-                return SAI2_ERR_TRUNCATED;
-            n = rd16le(s);
-            s += 2;
-            sl -= 2;
-            if (n > sl)
-                return SAI2_ERR_TRUNCATED;
-            s += n;
-            sl -= n;
-            scan_total += n;
-        }
-    }
-    if (scan_total > SIZE_MAX - 4096)
-        return SAI2_ERR_NOMEM;
-
-    /* SOI标记 */
-    if (!buf_u16be(&out, 0xFFD8))
-        goto oom;
-
-    /* DQT量化表 */
-    {
-        uint16_t body = (uint16_t)(65 + (channels > 1 ? 65 : 0));
-        if (!buf_u16be(&out, 0xFFDB) || !buf_u16be(&out, (uint16_t)(2 + body)))
-            goto oom;
-        if (!buf_u8(&out, 0x00) || !buf_put(&out, luma_quant, 64))
-            goto oom;
-        if (channels > 1) {
-            if (!buf_u8(&out, 0x01) || !buf_put(&out, chroma_quant, 64))
-                goto oom;
-        }
-    }
-
-    /* DHT霍夫曼表 */
-    {
-        uint16_t body =
-            (uint16_t)(sizeof(k_huff_dc_luma) + sizeof(k_huff_ac_luma) +
-                       (channels > 1 ? sizeof(k_huff_dc_chroma) +
-                                           sizeof(k_huff_ac_chroma)
-                                     : 0));
-        if (!buf_u16be(&out, 0xFFC4) || !buf_u16be(&out, (uint16_t)(2 + body)))
-            goto oom;
-        if (!buf_put(&out, k_huff_dc_luma, sizeof(k_huff_dc_luma)) ||
-            !buf_put(&out, k_huff_ac_luma, sizeof(k_huff_ac_luma)))
-            goto oom;
-        if (channels > 1) {
-            if (!buf_put(&out, k_huff_dc_chroma, sizeof(k_huff_dc_chroma)) ||
-                !buf_put(&out, k_huff_ac_chroma, sizeof(k_huff_ac_chroma)))
-                goto oom;
-        }
-    }
-
-    /* SOF0帧头 */
-    {
-        uint16_t i;
-        if (!buf_u16be(&out, 0xFFC0) ||
-            !buf_u16be(&out, (uint16_t)(8 + channels * 3)) ||
-            !buf_u8(&out, 8) || !buf_u16be(&out, jh) || !buf_u16be(&out, jw) ||
-            !buf_u8(&out, (uint8_t)channels))
-            goto oom;
-        for (i = 0; i < channels; ++i) {
-            if (!buf_u8(&out, (uint8_t)(i + 1)) || !buf_u8(&out, 0x11) ||
-                !buf_u8(&out, (uint8_t)(i != 0 ? 1 : 0)))
-                goto oom;
-        }
-    }
-
-    /* DRI，每个8像素高的MCU行使用一个重启间隔 */
-    if (!buf_u16be(&out, 0xFFDD) || !buf_u16be(&out, 4) ||
-        !buf_u16be(&out, (uint16_t)((jw + 7u) / 8u)))
-        goto oom;
-
-    /* SOS扫描头 */
-    {
-        uint16_t i;
-        if (!buf_u16be(&out, 0xFFDA) ||
-            !buf_u16be(&out, (uint16_t)(6 + channels * 2)) ||
-            !buf_u8(&out, (uint8_t)channels))
-            goto oom;
-        for (i = 0; i < channels; ++i) {
-            if (!buf_u8(&out, (uint8_t)(i + 1)) ||
-                !buf_u8(&out, (uint8_t)(i == 0 ? 0x00 : 0x11)))
-                goto oom;
-        }
-        if (!buf_u8(&out, 0x00) || !buf_u8(&out, 0x3F) || !buf_u8(&out, 0x00))
-            goto oom;
-    }
-
-    /* 熵编码扫描数据，每个重启间隔对应一行MCU。 */
-    {
-        const uint8_t *s = p;
-        size_t sl = left;
-        for (r = 0; r < rows; ++r) {
-            uint16_t n = rd16le(s);
-            s += 2;
-            sl -= 2;
-            if (!buf_put(&out, s, n))
-                goto oom;
-            s += n;
-            sl -= n;
-            if (r + 1 < rows) {
-                if (!buf_u16be(&out, (uint16_t)(0xFFD0 | (r & 7u))))
-                    goto oom;
-            }
-        }
-    }
-
-    /* EOI结束标记 */
-    if (!buf_u16be(&out, 0xFFD9))
+    if (!buf_u16be(&out, 0xFFD8) ||         /* SOI */
+        !jpeg_put_dqt(&out, &th) ||         /* DQT */
+        !jpeg_put_dht(&out, th.channels) || /* DHT */
+        !jpeg_put_sof0(&out, &th) ||        /* SOF0 */
+        !jpeg_put_dri(&out, th.width) ||    /* DRI */
+        !jpeg_put_sos(&out, th.channels) || /* SOS */
+        !jpeg_put_scan(&out, &th) ||        /* 熵编码扫描数据 */
+        !buf_u16be(&out, 0xFFD9))           /* EOI */
         goto oom;
 
     out_image->data = out.data;
     out_image->size = out.len;
-    out_image->width = jw;
-    out_image->height = jh;
+    out_image->width = th.width;
+    out_image->height = th.height;
     return SAI2_OK;
 
 oom:
@@ -553,6 +576,98 @@ static uint32_t ctz64(uint64_t v) {
  * 返回消耗的字节数。末尾不足一字节的位会被丢弃，因为SAI写入时
  * 每个通道都从字节边界开始。
  */
+
+/* 向位缓冲区补充最多32位的小端数据。 */
+static void refill_bits(byte_span *s, uint64_t *mask, uint32_t *remaining) {
+    while (*remaining < 32 && s->n > 0) {
+        uint64_t word;
+        uint32_t got;
+
+        if (s->n >= 4) {
+            word = rd32le(s->p);
+            s->p += 4;
+            s->n -= 4;
+            got = 32;
+        } else if (s->n >= 2) {
+            word = rd16le(s->p);
+            s->p += 2;
+            s->n -= 2;
+            got = 16;
+        } else {
+            word = s->p[0];
+            s->p += 1;
+            s->n -= 1;
+            got = 8;
+        }
+        *mask |= word << *remaining;
+        *remaining += got;
+    }
+}
+
+/*
+ * 从位流解码一个符号，结果是count个相同的value。
+ * opcode为0时输出一个字面量0；opcode为1到14时输出一个
+ * 带符号幅值；opcode为15时展开成count个0。
+ */
+static sai2_status decode_rle_symbol(uint64_t *mask, uint32_t *remaining,
+                                     int16_t *value, uint32_t *count) {
+    uint64_t next;
+    uint32_t first;
+    uint32_t opcode;
+
+    if (*mask == 0)
+        return SAI2_ERR_CORRUPT;
+
+    first = ctz64(*mask);
+    if (first >= 32)
+        return SAI2_ERR_CORRUPT;
+    next = *mask >> (first + 1u);
+    opcode = (first * 2u) | (uint32_t)(next & 1u);
+    if (opcode > 0x0F || *remaining < 2u + first)
+        return SAI2_ERR_CORRUPT;
+    *remaining -= 2u + first;
+    *mask = next >> 1u;
+
+    if (opcode == 0) {
+        *value = 0;
+        *count = 1;
+        return SAI2_OK;
+    }
+
+    if (opcode <= 0x0E) {
+        int32_t active;
+        uint32_t value_bits;
+        uint64_t value_mask;
+        uint64_t suffix;
+        int32_t value_mag;
+
+        if (*remaining < opcode + 1u)
+            return SAI2_ERR_CORRUPT;
+
+        active = (*mask & ((uint64_t)1 << opcode)) ? 1 : 0;
+        value_bits = opcode;
+        value_mask = ((uint64_t)1 << opcode) - 1u;
+        suffix = *mask & value_mask;
+        value_mag = (int32_t)((((uint64_t)1 << value_bits) | suffix) - 1u);
+
+        *remaining -= opcode + 1u;
+        *mask >>= opcode + 1u;
+
+        *value = (int16_t)(active ? -value_mag : value_mag);
+        *count = 1;
+        return SAI2_OK;
+    }
+
+    /* opcode为15时，读7位，输出(count + 8)个0。 */
+    if (*remaining < 7)
+        return SAI2_ERR_CORRUPT;
+    *count = (uint32_t)(*mask & 0x7Fu) + 8u;
+    *remaining -= 7u;
+    *mask >>= 7u;
+    *value = 0;
+    return SAI2_OK;
+}
+
 static sai2_status unpack_delta_rle16(const uint8_t *compressed,
                                       size_t compressed_size, int16_t *out,
                                       uint32_t pixel_count,
@@ -561,110 +676,35 @@ static sai2_status unpack_delta_rle16(const uint8_t *compressed,
     byte_span s;
     uint64_t mask = 0;
     uint32_t remaining = 0;
-    uint8_t channel;
 
     s.p = compressed;
     s.n = compressed_size;
 
-    for (channel = 0; channel < in_channels; ++channel) {
+    for (uint8_t channel = 0; channel < in_channels; ++channel) {
         uint32_t written = 0;
 
         while (written < pixel_count) {
-            uint32_t first;
-            uint64_t next;
-            uint32_t opcode;
+            int16_t value;
+            uint32_t count;
+            sai2_status rc;
 
-            /* 向缓冲区补充最多32位的小端数据。 */
-            while (remaining < 32 && s.n > 0) {
-                uint64_t word = 0;
-                uint32_t got = 0;
-
-                if (s.n >= 4) {
-                    word = rd32le(s.p);
-                    s.p += 4;
-                    s.n -= 4;
-                    got = 32;
-                } else if (s.n >= 2) {
-                    word = rd16le(s.p);
-                    s.p += 2;
-                    s.n -= 2;
-                    got = 16;
-                } else {
-                    word = s.p[0];
-                    s.p += 1;
-                    s.n -= 1;
-                    got = 8;
-                }
-                mask |= word << remaining;
-                remaining += got;
-            }
-
-            if (mask == 0)
+            refill_bits(&s, &mask, &remaining);
+            rc = decode_rle_symbol(&mask, &remaining, &value, &count);
+            if (rc != SAI2_OK)
+                return rc;
+            if (count > pixel_count - written)
                 return SAI2_ERR_CORRUPT;
 
-            first = ctz64(mask);
-            if (first >= 32)
-                return SAI2_ERR_CORRUPT;
-            next = mask >> (first + 1u);
-            opcode = (first * 2u) | (uint32_t)(next & 1u);
-            if (opcode > 0x0F || remaining < 2u + first)
-                return SAI2_ERR_CORRUPT;
-            remaining -= 2u + first;
-            mask = next >> 1u;
-
-            if (opcode == 0) {
-                out[(size_t)written * out_channels + channel] = 0;
-                written += 1;
-            } else if (opcode <= 0x0E) {
-                int32_t active;
-                uint32_t value_bits;
-                uint64_t value_mask;
-                uint64_t value;
-                int32_t value_mag;
-                int16_t result;
-
-                if (remaining < opcode + 1u)
-                    return SAI2_ERR_CORRUPT;
-
-                active = (mask & ((uint64_t)1 << opcode)) ? 1 : 0;
-                value_bits = opcode;
-                value_mask = ((uint64_t)1 << opcode) - 1u;
-                value = mask & value_mask;
-                value_mag =
-                    (int32_t)((((uint64_t)1 << value_bits) | value) - 1u);
-                result = (int16_t)(active ? -value_mag : value_mag);
-
-                remaining -= opcode + 1u;
-                mask >>= opcode + 1u;
-
-                out[(size_t)written * out_channels + channel] = result;
-                written += 1;
-            } else {
-                uint32_t zeros;
-                uint32_t i;
-
-                if (remaining < 7)
-                    return SAI2_ERR_CORRUPT;
-
-                zeros = (uint32_t)(mask & 0x7Fu) + 8u;
-                remaining -= 7u;
-                mask >>= 7u;
-
-                if (zeros > pixel_count - written)
-                    return SAI2_ERR_CORRUPT;
-
-                for (i = 0; i < zeros; ++i)
-                    out[(size_t)(written + i) * out_channels + channel] = 0;
-                written += zeros;
-            }
+            for (uint32_t i = 0; i < count; ++i)
+                out[(size_t)(written + i) * out_channels + channel] = value;
+            written += count;
         }
     }
 
     /* 流里没有的通道（alpha）补0。 */
     if (in_channels < out_channels) {
-        uint32_t i;
-        for (channel = in_channels; channel < out_channels; ++channel)
-            for (i = 0; i < pixel_count; ++i)
+        for (uint8_t channel = in_channels; channel < out_channels; ++channel)
+            for (uint32_t i = 0; i < pixel_count; ++i)
                 out[(size_t)i * out_channels + channel] = 0;
     }
 
@@ -686,10 +726,9 @@ static void delta_unpack_row(uint8_t *dest, const uint8_t *previous_row,
                              const int16_t *delta, uint32_t count) {
     uint16_t sum[4] = {0, 0, 0, 0};
     uint16_t prev16[4] = {0, 0, 0, 0};
-    uint32_t i;
     uint8_t c;
 
-    for (i = 0; i < count; ++i) {
+    for (uint32_t i = 0; i < count; ++i) {
         uint16_t cur_prev[4];
 
         for (c = 0; c < 4; ++c)
@@ -721,18 +760,109 @@ static void delta_unpack_row(uint8_t *dest, const uint8_t *previous_row,
     }
 }
 
+/*
+ * 解码单个tile：逐行读取delta并还原到画布上。
+ * 返回时body推进到该tile数据之后。
+ */
+static sai2_status decode_tile(byte_span *body, uint32_t tile_size,
+                               uint8_t *image, uint32_t canvas_width,
+                               uint32_t tile_beg_x, uint32_t tile_beg_y,
+                               uint32_t tile_size_y, uint8_t channels,
+                               const uint8_t *first_row) {
+    byte_span tile;
+    uint16_t checksum;
+    const uint8_t *previous_row = first_row;
+    uint32_t tile_end_x = tile_beg_x + 256u;
+    uint32_t tile_size_x;
+
+    if (tile_end_x > canvas_width)
+        tile_end_x = canvas_width;
+    tile_size_x = tile_end_x - tile_beg_x;
+
+    if (tile_size > body->n)
+        return SAI2_ERR_TRUNCATED;
+    tile.p = body->p;
+    tile.n = tile_size;
+
+    if (!span_u16(&tile, &checksum))
+        return SAI2_ERR_TRUNCATED;
+    (void)checksum;
+
+    for (uint32_t row = 0; row < tile_size_y; ++row) {
+        int16_t row_delta[256 * 4];
+        size_t consumed = 0;
+        uint8_t *dest_row =
+            image +
+            ((size_t)(tile_beg_y + row) * canvas_width + tile_beg_x) * 4u;
+        sai2_status rc = unpack_delta_rle16(tile.p, tile.n, row_delta,
+                                           tile_size_x, 4, channels, &consumed);
+        if (rc != SAI2_OK)
+            return rc;
+
+        delta_unpack_row(dest_row, previous_row, row_delta, tile_size_x);
+        previous_row = dest_row;
+
+        tile.p += consumed;
+        tile.n -= consumed;
+    }
+
+    body->p += tile_size;
+    body->n -= tile_size;
+    return SAI2_OK;
+}
+
+/* 解码整个intg块的所有tile，并跳过每个tile行的校验和。 */
+static sai2_status decode_tiles(byte_span *body, const uint32_t *tile_sizes,
+                               uint32_t tiles_x, uint32_t tiles_y,
+                               uint8_t *image, uint32_t canvas_width,
+                               uint32_t canvas_height, uint8_t channels) {
+    /* 每个tile第一行的预测值：全0。 */
+    uint8_t zero_row[256 * 4];
+
+    memset(zero_row, 0, sizeof(zero_row));
+
+    for (uint32_t ty = 0; ty < tiles_y; ++ty) {
+        uint32_t tile_beg_y = ty * 256u;
+        uint32_t tile_end_y = tile_beg_y + 256u;
+        uint32_t tile_size_y;
+
+        if (tile_end_y > canvas_height)
+            tile_end_y = canvas_height;
+        tile_size_y = tile_end_y - tile_beg_y;
+
+        for (uint32_t tx = 0; tx < tiles_x; ++tx) {
+            sai2_status rc =
+                decode_tile(body, tile_sizes[(size_t)ty * tiles_x + tx],
+                            image, canvas_width, tx * 256u, tile_beg_y,
+                            tile_size_y, channels, zero_row);
+            if (rc != SAI2_OK)
+                return rc;
+        }
+
+        /* 每个tile行末尾的校验和（高字节等于tiles_x）。 */
+        {
+            uint16_t checksum;
+            if (!span_u16(body, &checksum))
+                return SAI2_ERR_TRUNCATED;
+            (void)checksum;
+        }
+    }
+    return SAI2_OK;
+}
+
 sai2_status sai2_extract_pixels(const void *file_data, size_t file_size,
                                 sai2_pixels *out_pixels) {
     const uint8_t *d = (const uint8_t *)file_data;
     sai2_canvas_info info;
     chunk_ref chunk;
     byte_span body;
-    uint32_t tiles_x, tiles_y, tiles_count;
+    uint32_t tiles_x;
+    uint32_t tiles_y;
+    uint32_t tiles_count;
     uint32_t *tile_sizes = NULL;
     uint8_t *image = NULL;
     uint32_t channels;
     size_t image_size;
-    uint32_t ty;
     int rc;
 
     if (!d || !out_pixels)
@@ -775,13 +905,10 @@ sai2_status sai2_extract_pixels(const void *file_data, size_t file_size,
     if (!tile_sizes)
         return SAI2_ERR_NOMEM;
 
-    {
-        uint32_t i;
-        for (i = 0; i < tiles_count; ++i) {
-            tile_sizes[i] = rd32le(body.p);
-            body.p += 4;
-            body.n -= 4;
-        }
+    for (uint32_t i = 0; i < tiles_count; ++i) {
+        tile_sizes[i] = rd32le(body.p);
+        body.p += 4;
+        body.n -= 4;
     }
 
     if ((uint64_t)info.width * info.height > SIZE_MAX / 4u) {
@@ -797,88 +924,17 @@ sai2_status sai2_extract_pixels(const void *file_data, size_t file_size,
 
     channels = ((info.background_flags & 7u) == 0) ? 4u : 3u;
 
-    for (ty = 0; ty < tiles_y; ++ty) {
-        uint32_t tile_beg_y = ty * 256u;
-        uint32_t tile_end_y = tile_beg_y + 256u;
-        uint32_t tile_size_y;
-        uint32_t tx;
-
-        if (tile_end_y > info.height)
-            tile_end_y = info.height;
-        tile_size_y = tile_end_y - tile_beg_y;
-
-        {
-            uint8_t composite_row[256 * 4];
-            memset(composite_row, 0, sizeof(composite_row));
-
-            for (tx = 0; tx < tiles_x; ++tx) {
-                uint32_t tile_size = tile_sizes[(size_t)ty * tiles_x + tx];
-                byte_span tile;
-                uint16_t checksum;
-                uint32_t tile_beg_x = tx * 256u;
-                uint32_t tile_end_x = tile_beg_x + 256u;
-                uint32_t tile_size_x;
-                const uint8_t *previous_row = composite_row;
-                uint32_t row;
-
-                if (tile_end_x > info.width)
-                    tile_end_x = info.width;
-                tile_size_x = tile_end_x - tile_beg_x;
-
-                if (tile_size > body.n) {
-                    rc = SAI2_ERR_TRUNCATED;
-                    goto fail;
-                }
-                tile.p = body.p;
-                tile.n = tile_size;
-
-                if (!span_u16(&tile, &checksum)) {
-                    rc = SAI2_ERR_TRUNCATED;
-                    goto fail;
-                }
-                (void)checksum;
-
-                for (row = 0; row < tile_size_y; ++row) {
-                    int16_t row_delta[256 * 4];
-                    size_t consumed = 0;
-                    uint8_t *dest_row =
-                        image +
-                        ((size_t)(tile_beg_y + row) * info.width + tile_beg_x) *
-                            4u;
-
-                    rc = unpack_delta_rle16(tile.p, tile.n, row_delta,
-                                            tile_size_x, 4, (uint8_t)channels,
-                                            &consumed);
-                    if (rc != SAI2_OK)
-                        goto fail;
-
-                    delta_unpack_row(dest_row, previous_row, row_delta,
-                                     tile_size_x);
-                    previous_row = dest_row;
-
-                    tile.p += consumed;
-                    tile.n -= consumed;
-                }
-
-                body.p += tile_size;
-                body.n -= tile_size;
-            }
-        }
-
-        /* Per tile-row checksum (high byte == tiles_x). */
-        {
-            uint16_t checksum;
-            if (!span_u16(&body, &checksum)) {
-                rc = SAI2_ERR_TRUNCATED;
-                goto fail;
-            }
-            (void)checksum;
-        }
+    rc = decode_tiles(&body, tile_sizes, tiles_x, tiles_y, image, info.width,
+                      info.height, (uint8_t)channels);
+    if (rc != SAI2_OK) {
+        free(tile_sizes);
+        free(image);
+        return (sai2_status)rc;
     }
 
+    /* 不透明画布补满alpha。 */
     if (channels == 3) {
-        size_t i;
-        for (i = 0; i < (size_t)info.width * info.height; ++i)
+        for (size_t i = 0; i < (size_t)info.width * info.height; ++i)
             image[i * 4u + 3u] = 0xFFu;
     }
 
@@ -888,11 +944,6 @@ sai2_status sai2_extract_pixels(const void *file_data, size_t file_size,
     out_pixels->width = info.width;
     out_pixels->height = info.height;
     return SAI2_OK;
-
-fail:
-    free(tile_sizes);
-    free(image);
-    return (sai2_status)rc;
 }
 
 /* ------------------------------------------------------------------------- */
